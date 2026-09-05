@@ -52,7 +52,7 @@ class MachLearn:
         # Do prediction with ML
         if model is ModelType.Compass:
             results = self.compass_ml_model.predict(image, verbose=False)  # Predict on an image
-        elif model is model.Target:
+        elif model is ModelType.Target:
             results = self.target_ml_model.predict(image, verbose=False)  # Predict on an image
 
         if results and len(results) == 1:
@@ -74,4 +74,3 @@ class MachLearn:
                 return matches
             else:
                 return None
-

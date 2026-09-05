@@ -943,15 +943,15 @@ class EDAutopilot:
         ml_res = self.mach_learn.model_predict(ModelType.Compass, full_compass_image2, '')
         if ml_res and len(ml_res) > 0:
             for ml in ml_res:
-                if ml.class_name == 'compass':
+                if ml.class_name == 'compass' and ml.match_pct > max_val:
                     max_val = ml.match_pct
                     compass_quad = ml.bounding_quad
                     # pt = [compass_quad.left, compass_quad.top]
-                if ml.class_name == 'navpoint':
+                if ml.class_name == 'navpoint' and ml.match_pct > n_max_val:
                     n_max_val = ml.match_pct
                     n_compass_quad = ml.bounding_quad
                     # n_pt = [n_compass_quad.left, n_compass_quad.top]
-                if ml.class_name == 'navpoint-behind':
+                if ml.class_name == 'navpoint-behind' and ml.match_pct > b_max_val:
                     b_max_val = ml.match_pct
                     b_compass_quad = ml.bounding_quad
                     # b_pt = [b_compass_quad.left, b_compass_quad.top]
@@ -1943,7 +1943,7 @@ class EDAutopilot:
             #     off = nav_off2
             #     self.ap_ckb('log', 'Using Compass for Target Align')
                 # Check if Target is now behind us
-                if tar_off2['tar_behind'] < 0:
+                if tar_off2['tar_behind']:
                     self.ap_ckb('log', 'Target is behind us')
                     return ScTargetAlignReturn.Lost
 
