@@ -29,43 +29,72 @@ class OCR:
         """
         self.ap = ed_ap
         self.screen = screen
-        if self.ap.config['OCRMobile']:
-            self.paddleocr = PaddleOCR(
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                text_detection_model_name="PP-OCRv5_mobile_det",
-                text_recognition_model_name="en_PP-OCRv5_mobile_rec")  # text detection + text recognition
-        else:
-            self.paddleocr = PaddleOCR(
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False)  # text detection + text recognition
+        self._paddleocr_is_mobile = bool(self.ap.config['OCRMobile'])
+        self._standard_paddleocr = None
+        self._mobile_paddleocr = None
+        self.paddleocr = None
 
         # Class for text similarity metrics
         self.jarowinkler = JaroWinkler()
         self.sorensendice = SorensenDice()
         self.normalized_levenshtein = NormalizedLevenshtein()
 
-    def _reinit_paddleocr(self):
+    @staticmethod
+    def _create_paddleocr(mobile=False):
+        """Create a PaddleOCR instance using either the standard or mobile model."""
+        if mobile:
+            return PaddleOCR(
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                text_detection_model_name="PP-OCRv5_mobile_det",
+                text_recognition_model_name="en_PP-OCRv5_mobile_rec")  # text detection + text recognition
+
+        return PaddleOCR(
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False)  # text detection + text recognition
+
+    def _get_paddleocr(self, mobile: bool | None = None):
+        """Return the configured OCR model, optionally forcing the mobile model for a call."""
+        if mobile is None:
+            mobile = self._paddleocr_is_mobile
+
+        if mobile:
+            if self._mobile_paddleocr is None:
+                logger.info("Initializing mobile PaddleOCR model.")
+                self._mobile_paddleocr = self._create_paddleocr(True)
+            paddleocr = self._mobile_paddleocr
+        else:
+            if self._standard_paddleocr is None:
+                logger.info("Initializing standard PaddleOCR model.")
+                self._standard_paddleocr = self._create_paddleocr(False)
+            paddleocr = self._standard_paddleocr
+
+        if mobile == self._paddleocr_is_mobile:
+            self.paddleocr = paddleocr
+        return paddleocr
+
+    def warmup(self, mobile: bool | None = None):
+        """Initialize the selected OCR model before a time-critical detection loop."""
+        self._get_paddleocr(mobile)
+
+    def _reinit_paddleocr(self, mobile: bool | None = None):
         """ Reinitialize PaddleOCR after a failure. PaddleOCR's C++ layer can throw
         an 'Unknown exception' which corrupts internal state. If the same instance is
         reused, the next call will cause a hard process crash with no Python traceback.
         Creating a fresh instance prevents this. """
         try:
             logger.warning("Reinitializing PaddleOCR after failure.")
-            if self.ap.config['OCRMobile']:
-                self.paddleocr = PaddleOCR(
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
-                    use_textline_orientation=False,
-                    text_detection_model_name="PP-OCRv5_mobile_det",
-                    text_recognition_model_name="en_PP-OCRv5_mobile_rec")  # text detection + text recognition
+            target_mobile = self._paddleocr_is_mobile if mobile is None else bool(mobile)
+            paddleocr = self._create_paddleocr(target_mobile)
+            if target_mobile:
+                self._mobile_paddleocr = paddleocr
             else:
-                self.paddleocr = PaddleOCR(
-                    use_doc_orientation_classify=False,
-                    use_doc_unwarping=False,
-                    use_textline_orientation=False)  # text detection + text recognition
+                self._standard_paddleocr = paddleocr
+
+            if target_mobile == self._paddleocr_is_mobile:
+                self.paddleocr = paddleocr
 
         except Exception as e:
             logger.error(f"Failed to reinitialize PaddleOCR: {e}")
@@ -102,7 +131,7 @@ class OCR:
         return self.normalized_levenshtein.similarity(s1_new, s2_new)
         # return self.sorensendice.similarity(s1_new, s2_new)
 
-    def image_ocr(self, image, name=''):
+    def image_ocr(self, image, name='', mobile: bool | None = None):
         """ Perform OCR with no filtering. Returns the full OCR data and a simplified list of strings.
         This routine is slower than the simplified OCR.
         @param name:
@@ -120,7 +149,7 @@ class OCR:
         try:
             # Remove Alpha channel if it exists
             image2 = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-            ocr_data = self.paddleocr.predict(image2)
+            ocr_data = self._get_paddleocr(mobile).predict(image2)
 
             if ocr_data is None:
                 return None, None
@@ -151,12 +180,13 @@ class OCR:
             cv2.imwrite(f"./ocr_output/{name}", image)
             return None, None
 
-    def image_simple_ocr(self, image, name='') -> list[str] | None:
+    def image_simple_ocr(self, image, name='', mobile: bool | None = None) -> list[str] | None:
         """ Perform OCR with no filtering. Returns a simplified list of strings with no positional data.
         This routine is faster than the function that returns the full data. Generally good when you
         expect to only return one or two lines of text.
         @param name: A name for the image for logging/debug purposes.
         @param image: The image to check.
+        @param mobile: Force the mobile OCR model for this call when True, or the standard model when False.
         'ocr_textlist' is returned in the following format, or None:
         ['DESTINATION', 'SIRIUS ATMOSPHERICS']
         """
@@ -171,7 +201,7 @@ class OCR:
         try:
             # Remove Alpha channel if it exists
             image2 = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-            ocr_data = self.paddleocr.predict(image2)
+            ocr_data = self._get_paddleocr(mobile).predict(image2)
 
             # elapsed_time = time.time() - start_time
             # print(f"OCR took {elapsed_time} secs")
@@ -202,12 +232,13 @@ class OCR:
         except Exception as e:
             logger.error(f"OCR failed: {e}")
             # Reinit to avoid hard crash on next call due to corrupted C++ state
-            self._reinit_paddleocr()
+            self._reinit_paddleocr(mobile)
             logger.error(f"Image stored to ocr_output folder.")
             cv2.imwrite(f"./ocr_output/{name}", image)
             return None
 
-    def get_highlighted_item_data(self, image, item: Quad, name=''):
+    def get_highlighted_item_data(self, image, item: Quad, name='', mobile: bool | None = None,
+                                  debug_images=False):
         """ Attempts to find a selected item in an image. The selected item is identified by being solid orange or blue
             rectangle with dark text, instead of orange/blue text on a dark background.
             The OCR daya of the first item matching the criteria is returned, otherwise None.
@@ -216,11 +247,11 @@ class OCR:
             @param image: The image to check.
      """
         # Find the selected item/menu (solid orange)
-        img_selected, quad = self.get_highlighted_item_in_image(image, item)
+        img_selected, quad = self.get_highlighted_item_in_image(image, item, debug_images)
         if img_selected is not None:
             # cv2.imshow("img", img_selected)
 
-            ocr_data, ocr_textlist = self.image_ocr(img_selected, name)
+            ocr_data, ocr_textlist = self.image_ocr(img_selected, name, mobile)
 
             if ocr_data is not None:
                 return img_selected, ocr_data, ocr_textlist, quad
@@ -231,7 +262,7 @@ class OCR:
             return None, None, None, None
 
     @staticmethod
-    def get_highlighted_item_in_image(image, item: Quad) -> (MatLike, Quad):
+    def get_highlighted_item_in_image(image, item: Quad, debug_images=False) -> (MatLike, Quad):
         """ Attempts to find a selected item in an image. The selected item is identified by being solid orange or blue
         rectangle with dark text, instead of orange/blue text on a dark background.
         The image of the first item matching the criteria and minimum width and height is returned
@@ -251,7 +282,8 @@ class OCR:
         img_h, img_w, _ = image.shape
 
         # The input image
-        cv2.imwrite('test/nav-panel/out/1-input.png', image)
+        if debug_images:
+            cv2.imwrite('test/nav-panel/out/1-input.png', image)
 
         # Perform HSV mask
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -259,29 +291,34 @@ class OCR:
         upper_range = np.array([255, 255, 255])
         mask = cv2.inRange(hsv, lower_range, upper_range)
         masked_image = cv2.bitwise_and(image, image, mask=mask)
-        cv2.imwrite('test/nav-panel/out/2-masked.png', masked_image)
+        if debug_images:
+            cv2.imwrite('test/nav-panel/out/2-masked.png', masked_image)
 
         # Convert to gray scale and invert
         gray = cv2.cvtColor(masked_image, cv2.COLOR_BGR2GRAY)
-        cv2.imwrite('test/nav-panel/out/3-gray.png', gray)
+        if debug_images:
+            cv2.imwrite('test/nav-panel/out/3-gray.png', gray)
 
         # Convert to B&W to allow FindContours to find rectangles.
         ret, thresh1 = cv2.threshold(gray, 0, 255, cv2.THRESH_OTSU)  # | cv2.THRESH_BINARY_INV)
-        cv2.imwrite('test/nav-panel/out/4-thresh1.png', thresh1)
+        if debug_images:
+            cv2.imwrite('test/nav-panel/out/4-thresh1.png', thresh1)
 
         # Perform opening. Opening  is just another name of erosion followed by dilation. This will remove specs and
         # edges and then embolden the remaining edges. This works to remove text and stray lines.
         k = int(min(img_w * min_w, img_h * min_h) / 10)  # Make kernel 10% of the smallest image side
         kernel = np.ones((k, k), np.uint8)
         opening = cv2.morphologyEx(thresh1, cv2.MORPH_OPEN, kernel)
-        cv2.imwrite('test/nav-panel/out/5-opened.png', opening)
+        if debug_images:
+            cv2.imwrite('test/nav-panel/out/5-opened.png', opening)
 
         # Finding contours in B&W image. White are the areas detected
         contours, hierarchy = cv2.findContours(opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         output = image
         cv2.drawContours(output, contours, -1, (0, 255, 0), 2)
-        cv2.imwrite('test/nav-panel/out/6-contours.png', output)
+        if debug_images:
+            cv2.imwrite('test/nav-panel/out/6-contours.png', output)
 
         # bounds = image
         cropped = image
@@ -299,7 +336,8 @@ class OCR:
                 cropped = image[y:y + h, x:x + w]
 
                 # cv2.imshow("cropped", cropped)
-                cv2.imwrite('test/nav-panel/out/7-selected_item.png', cropped)
+                if debug_images:
+                    cv2.imwrite('test/nav-panel/out/7-selected_item.png', cropped)
                 q = Quad.from_rect([x / img_w, y / img_h, (x + w) / img_w, (y + h) / img_h])
                 return cropped, q
 

@@ -164,7 +164,8 @@ class EDNavigationPanel:
         # Get the nav panel image based on the region
         image = self.screen.get_screen(self.panel_quad_pix.left, self.panel_quad_pix.top,
                                        self.panel_quad_pix.right, self.panel_quad_pix.bottom, rgb=False)
-        cv2.imwrite(f'test/nav-panel/out/nav_panel_original.png', image)
+        if self.ap.debug_images:
+            cv2.imwrite(f'test/nav-panel/out/nav_panel_original.png', image)
 
         # Offset the panel co-ords to match the cropped image (i.e. starting at 0,0)
         panel_quad_pix_off = copy(self.panel_quad_pix)
@@ -176,7 +177,8 @@ class EDNavigationPanel:
         self._transform = trans
         self._rev_transform = rev_trans
         # Write the file
-        cv2.imwrite(f'test/nav-panel/out/nav_panel_straight.png', straightened)
+        if self.ap.debug_images:
+            cv2.imwrite(f'test/nav-panel/out/nav_panel_straight.png', straightened)
 
         if self.ap.debug_overlay:
             self.ap.overlay.overlay_quad_pct('nav_panel_active', self.panel_quad_pct, (0, 255, 0), 2, 5)
@@ -197,7 +199,8 @@ class EDNavigationPanel:
         tab_bar_quad = Quad.from_rect(self.sub_reg['tab_bar']['rect'])
         # Crop the image to the extents of the quad
         tab_bar = crop_image_by_pct(self.panel, tab_bar_quad)
-        cv2.imwrite(f'test/nav-panel/out/tab_bar.png', tab_bar)
+        if self.ap.debug_images:
+            cv2.imwrite(f'test/nav-panel/out/tab_bar.png', tab_bar)
 
         if self.ap.debug_overlay:
             # Transform the array of coordinates to the skew of the nav panel
@@ -223,7 +226,8 @@ class EDNavigationPanel:
         location_panel_quad = Quad.from_rect(self.sub_reg['location_panel']['rect'])
         # Crop the image to the extents of the quad
         location_panel = crop_image_by_pct(nav_panel, location_panel_quad)
-        cv2.imwrite(f'test/nav-panel/out/location_panel.png', location_panel)
+        if self.ap.debug_images:
+            cv2.imwrite(f'test/nav-panel/out/location_panel.png', location_panel)
 
         if self.ap.debug_overlay:
             # Transform the array of coordinates to the skew of the nav panel
@@ -245,7 +249,8 @@ class EDNavigationPanel:
         if active:
             # Store image
             image = self.screen.get_screen_full()
-            cv2.imwrite(f'test/nav-panel/nav_panel_full.png', image)
+            if self.ap.debug_images:
+                cv2.imwrite(f'test/nav-panel/nav_panel_full.png', image)
             return active, active_tab_name
         else:
             print("Open Nav Panel")
@@ -262,7 +267,8 @@ class EDNavigationPanel:
             if active:
                 # Store image
                 image = self.screen.get_screen_full()
-                cv2.imwrite(f'test/nav-panel/nav_panel_full.png', image)
+                if self.ap.debug_images:
+                    cv2.imwrite(f'test/nav-panel/nav_panel_full.png', image)
                 return active, active_tab_name
             else:
                 return False, ""
@@ -292,7 +298,9 @@ class EDNavigationPanel:
                 return False, ""
 
             item = Quad.from_rect(self.sub_reg['nav_pnl_tab']['rect'])
-            img_selected, _, ocr_textlist, quad = self.ocr.get_highlighted_item_data(tab_bar, item, 'nav panel')
+            img_selected, _, ocr_textlist, quad = self.ocr.get_highlighted_item_data(
+                tab_bar, item, 'nav panel', self.ap.config.get('NavPanelOCRMobile', False),
+                self.ap.debug_images)
             if img_selected is not None:
                 if self.ap.debug_overlay:
                     tab_bar_quad = Quad.from_rect(self.sub_reg['tab_bar']['rect'])
@@ -450,7 +458,7 @@ class EDNavigationPanel:
 
             # Find the selected item/menu (solid orange)
             item = Quad.from_rect(self.sub_reg['nav_pnl_location']['rect'])
-            img_selected, q = self.ocr.get_highlighted_item_in_image(loc_panel, item)
+            img_selected, q = self.ocr.get_highlighted_item_in_image(loc_panel, item, self.ap.debug_images)
 
             # Check if end of list.
             if img_selected is None and in_list:
@@ -459,7 +467,8 @@ class EDNavigationPanel:
                 return False
 
             # OCR the selected item
-            ocr_textlist = self.ocr.image_simple_ocr(img_selected)
+            ocr_textlist = self.ocr.image_simple_ocr(
+                img_selected, mobile=self.ap.config.get('NavPanelOCRMobile', False))
             if ocr_textlist is not None:
                 # Check if list has not changed (we are at the top)
                 if ocr_textlist == ocr_textlist_last:
@@ -495,7 +504,7 @@ class EDNavigationPanel:
 
             # Find the selected item/menu (solid orange)
             item = Quad.from_rect(self.sub_reg['nav_pnl_location']['rect'])
-            img_selected, quad = self.ocr.get_highlighted_item_in_image(loc_panel, item)
+            img_selected, quad = self.ocr.get_highlighted_item_in_image(loc_panel, item, self.ap.debug_images)
 
             # Check if end of list.
             if img_selected is None and in_list:
@@ -529,7 +538,8 @@ class EDNavigationPanel:
 
             # OCR the selected item
             sim_match = 0.8  # Similarity match 0.0 - 1.0 for 0% - 100%)
-            ocr_textlist = self.ocr.image_simple_ocr(img_selected)
+            ocr_textlist = self.ocr.image_simple_ocr(
+                img_selected, mobile=self.ap.config.get('NavPanelOCRMobile', False))
             if ocr_textlist is not None:
                 sim = self.ocr.string_similarity(f"['{dst_name.upper()}']", str(ocr_textlist))
 

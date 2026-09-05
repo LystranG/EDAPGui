@@ -306,6 +306,8 @@ The following settings from the AP.json file (in the configs folder) are **not**
     "Language": "en"               # Language for OCR checks (i.e. 'en', 'fr', 'de')
 
     "DisengageUseMatch": false,    # For 'Disengage' use old image match instead of OCR
+    "DisengageOCRMobile": true,    # Use faster mobile OCR only for the disengage check
+    "SCDisengagePollInterval": 0.25,  # Seconds between disengage OCR checks while in supercruise
 
     "Debug_ShowCompassOverlay": false,  # For testing
     "Debug_ShowTargetOverlay": false,   # For testing
@@ -319,7 +321,8 @@ The following settings from the AP.json file (in the configs folder) are **not**
     "FCDepartureAngle": 90.0,      # Angle to pitch up when leaving a Fleet Carrier
     "OCDepartureAngle": 90.0       # Angle to pitch up when leaving an Orbital Construction Site
 
-    "OCRMobile": false,  # Use the mobile (light) version which is smaller and faster, but less accurate.
+    "OCRMobile": false,  # Use the mobile (light) version globally. Leave false to keep other OCR paths unchanged.
+    "NavPanelOCRMobile": false,  # Use the faster mobile model only for navigation panel OCR.
 ```
                                                               
 ## Elite Dangerous, Role Play and Autopilot

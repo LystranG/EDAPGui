@@ -347,6 +347,8 @@ class EDAutopilot:
             "Language": 'en',  # Language (matching ./locales/xx.json file)
             "OCRLanguage": 'en',  # Language for OCR detection (see OCR language doc in \docs)
             "OCRMobile": False,  # Use the mobile (light) version which is smaller and faster, but less accurate.
+            "NavPanelOCRMobile": False,  # Use mobile OCR only for navigation panel destination checks.
+            "DisengageOCRMobile": True,  # Use mobile OCR for the time-critical supercruise disengage check.
             "EnableEDMesg": False,
             "EDMesgActionsPort": 15570,
             "EDMesgEventsPort": 15571,
@@ -360,6 +362,7 @@ class EDAutopilot:
             "Key_DefHoldTime": 0.2,  # Default hold time for a key press
             "Key_RepeatDelay": 0.1,  # Delay between key press repeats
             "DisengageUseMatch": False,  # For 'Disengage' use old image match instead of OCR
+            "SCDisengagePollInterval": 0.25,  # Seconds between disengage OCR checks while in supercruise.
             "target_align_outer_lim": 1.0,  # For test
             "target_align_inner_lim": 0.5,  # For test
             "Debug_ShowCompassOverlay": False,  # For test
@@ -394,6 +397,10 @@ class EDAutopilot:
                 cnf['OCRLanguage'] = 'en'
             if 'OCRMobile' not in cnf:
                 cnf['OCRMobile'] = False
+            if 'NavPanelOCRMobile' not in cnf:
+                cnf['NavPanelOCRMobile'] = False
+            if 'DisengageOCRMobile' not in cnf:
+                cnf['DisengageOCRMobile'] = True
             if 'EnableEDMesg' not in cnf:
                 cnf['EnableEDMesg'] = False
             if 'EDMesgActionsPort' not in cnf:
@@ -420,6 +427,8 @@ class EDAutopilot:
                 cnf['Key_RepeatDelay'] = 0.1
             if 'DisengageUseMatch' not in cnf:
                 cnf['DisengageUseMatch'] = False
+            if 'SCDisengagePollInterval' not in cnf:
+                cnf['SCDisengagePollInterval'] = 0.25
             if 'target_align_outer_lim' not in cnf:
                 cnf['target_align_outer_lim'] = 1.0  # For test
             if 'target_align_inner_lim' not in cnf:
@@ -1379,7 +1388,7 @@ class EDAutopilot:
         # OCR the selected item
         sim_match = 0.35  # Similarity match 0.0 - 1.0 for 0% - 100%)
         sim = 0.0
-        ocr_textlist = self.ocr.image_simple_ocr(image, 'disengage')
+        ocr_textlist = self.ocr.image_simple_ocr(image, 'disengage', self.config['DisengageOCRMobile'])
         if ocr_textlist is not None:
             sim = self.ocr.string_similarity(self.locale["PRESS_TO_DISENGAGE_MSG"], str(ocr_textlist))
             logger.info(f"Disengage similarity with {str(ocr_textlist)} is {sim}")
@@ -1425,6 +1434,17 @@ class EDAutopilot:
     def _sc_sco_active_loop(self):
         """ A loop to determine is Supercruise Overcharge is active.
         This runs on a separate thread monitoring the status in the background. """
+        try:
+            poll_interval = float(self.config.get('SCDisengagePollInterval', 0.25))
+        except (TypeError, ValueError):
+            poll_interval = 0.25
+        poll_interval = min(max(poll_interval, 0.05), 1.0)
+
+        try:
+            self.ocr.warmup(self.config.get('DisengageOCRMobile', True))
+        except Exception as e:
+            logger.warning(f"Disengage OCR warmup failed; retrying during checks: {e}")
+
         while self._sc_sco_active_loop_enable:
             # deactivate if not in SC
             if not self.status.get_flag(FlagsSupercruise):
@@ -1471,10 +1491,11 @@ class EDAutopilot:
             # else:
             #     self._sc_disengage_active = False
 
-            # Sleep upto 1 sec max. If OCR takes > 1 sec, there will be no delay
+            # Sleep up to the configured poll interval max. If OCR takes longer,
+            # there will be no delay.
             elapsed_time = time.time() - start_time
-            if elapsed_time < 1.0:
-                sleep(1.0 - elapsed_time)
+            if elapsed_time < poll_interval:
+                sleep(poll_interval - elapsed_time)
 
         # Reset disengage latch, in case it was latched.
         self._sc_disengage_active = False
