@@ -1477,10 +1477,12 @@ class EDAutopilot:
             self._sc_sco_active_loop_thread = threading.Thread(target=self._sc_sco_active_loop, daemon=True)
             self._sc_sco_active_loop_thread.start()
 
-    def stop_sco_monitoring(self):
-        """ Stop Supercruise Overcharge Monitoring. """
+    def stop_sco_monitoring(self, clear_disengage=True):
+        """停止 SCO 监控；正常脱离时可保留脱离锁存供 SC 主循环消费。"""
         self._sc_sco_active_loop_enable = False
         self._sc_disengage_cancel_epoch += 1
+        if clear_disengage:
+            self._sc_disengage_active = False
         self._clear_disengage_overlay()
 
     def _sc_sco_active_loop(self):
@@ -1489,7 +1491,10 @@ class EDAutopilot:
         while self._sc_sco_active_loop_enable:
             # deactivate if not in SC
             if not self.status.get_flag(FlagsSupercruise):
-                self.stop_sco_monitoring()
+                # 正常脱离会先离开 SC，再由 sc_assist 消费锁存并进入 docking。
+                # 这里取消 OCR，但不能提前清掉 _sc_disengage_active，否则主循环会
+                # 把正常到站误判为异常掉出 SC，随后重新调用 sc_engage()。
+                self.stop_sco_monitoring(clear_disengage=False)
                 break
 
             start_time = time.time()
@@ -1538,8 +1543,6 @@ class EDAutopilot:
             if elapsed_time < 1.0:
                 sleep(1.0 - elapsed_time)
 
-        # Reset disengage latch, in case it was latched.
-        self._sc_disengage_active = False
         self._clear_disengage_overlay()
 
     def undock(self):

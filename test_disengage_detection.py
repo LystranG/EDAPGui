@@ -19,7 +19,8 @@ def load_sc_disengage_ocr():
     tree = ast.parse(source)
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'EDAutopilot')
     methods = [node for node in cls.body if isinstance(node, ast.FunctionDef)
-               and node.name in {'_clear_disengage_overlay', '_show_disengage_overlay', 'sc_disengage_ocr'}]
+               and node.name in {'_clear_disengage_overlay', '_show_disengage_overlay',
+                                 'sc_disengage_ocr', 'stop_sco_monitoring'}]
     namespace = {
         'cv2': cv2,
         'time': __import__('time'),
@@ -30,10 +31,11 @@ def load_sc_disengage_ocr():
         'logger': Mock(),
     }
     exec(compile(ast.Module(body=methods, type_ignores=[]), 'ED_AP.py', 'exec'), namespace)
-    return namespace['_clear_disengage_overlay'], namespace['_show_disengage_overlay'], namespace['sc_disengage_ocr']
+    return (namespace['_clear_disengage_overlay'], namespace['_show_disengage_overlay'],
+            namespace['sc_disengage_ocr'], namespace['stop_sco_monitoring'])
 
 
-SC_CLEAR_OVERLAY, SC_SHOW_OVERLAY, SC_DISENGAGE_OCR = load_sc_disengage_ocr()
+SC_CLEAR_OVERLAY, SC_SHOW_OVERLAY, SC_DISENGAGE_OCR, STOP_SCO_MONITORING = load_sc_disengage_ocr()
 
 
 class DisengageDetectionTests(unittest.TestCase):
@@ -160,6 +162,23 @@ class DisengageMethodTests(unittest.TestCase):
                                   capture_region_filtered=lambda *_: np.zeros((20, 20), dtype=np.uint8))
         self.assertFalse(SC_DISENGAGE_OCR(ap, scr_reg))
         keys.send.assert_not_called()
+
+    def test_monitor_shutdown_preserves_disengage_latch_until_docking(self):
+        """监控线程因离开 SC 停止时，不能抢先清除主循环需要的脱离锁存。"""
+        overlay = Mock()
+        ap = SimpleNamespace(
+            _sc_sco_active_loop_enable=True,
+            _sc_disengage_cancel_epoch=0,
+            _sc_disengage_active=True,
+            overlay=overlay,
+        )
+        ap._clear_disengage_overlay = MethodType(SC_CLEAR_OVERLAY, ap)
+
+        STOP_SCO_MONITORING(ap, clear_disengage=False)
+        self.assertTrue(ap._sc_disengage_active)
+
+        STOP_SCO_MONITORING(ap)
+        self.assertFalse(ap._sc_disengage_active)
 
     def test_method_rechecks_sco_before_sending(self):
         keys = Mock()
