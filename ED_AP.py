@@ -2813,8 +2813,12 @@ class EDAutopilot:
         # Loop forever keeping tight align to target, until we get SC Disengage popup
         while True:
             sleep(0.05)
-            if (self.jn.ship_state()['status'] == 'in_supercruise' or self.status.get_flag(FlagsSupercruise) or
-                    self._sc_disengage_active):
+            # 脱离提示一旦锁存，目标罗盘通常会立即消失；必须先处理脱离，
+            # 不能再调用 sc_target_align 将正常到站误判为 Lost。
+            if self._sc_disengage_active:
+                self.stop_sco_monitoring()
+                break
+            if (self.jn.ship_state()['status'] == 'in_supercruise' or self.status.get_flag(FlagsSupercruise)):
                 # Align and stay on target. If false is returned, we have lost the target behind us.
                 # self.set_speed_50()
                 align_res = self.sc_target_align(scr_reg)
@@ -2848,15 +2852,6 @@ class EDAutopilot:
                 # Continue journey after interdiction
                 self.set_throttle_50()
                 self.compass_align(scr_reg)  # realign with station
-
-            # check for SC Disengage
-            # if self.sc_disengage_label_up(scr_reg):
-            #     if self.sc_disengage_ocr(scr_reg):
-            if self._sc_disengage_active:
-                # self.ap_ckb('log+vce', 'Disengage Supercruise')
-                # self.keys.send('HyperSuperCombination')
-                self.stop_sco_monitoring()
-                break
 
         # if no error, we must have gotten disengage
         if not align_failed and do_docking:
