@@ -664,6 +664,10 @@ class EDWayPoint:
 
                     # Jump to the station by name
                     res = self.ap.supercruise_to_station(scr_reg, next_wp_station)
+                    if not res:
+                        self.ap_ckb('log+vce', f"Unable to maneuver to station: {next_wp_station}")
+                        _abort = True
+                        break
                     sleep(1)  # Allow status log to update
                     continue
                 else:

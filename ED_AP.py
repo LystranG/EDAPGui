@@ -91,6 +91,7 @@ class CompassOffset(TypedDict):
     roll: float
     pit: float
     yaw: float
+    boundary: bool
 
 
 class EDAutopilot:
@@ -1305,7 +1306,8 @@ class EDAutopilot:
 
             behind = nav_off1['z'] < 0
             result = {'roll': nav_off1['roll'], 'pit': nav_off1['pit'], 'yaw': nav_off1['yaw'],
-                      'tar_occ': False, 'tar_behind': behind, 'used_nav': True, 'used_tar': False}
+                      'tar_occ': False, 'tar_behind': behind, 'used_nav': True, 'used_tar': False,
+                      'boundary': nav_off1.get('boundary', False)}
             return result
 
         elif tar_off1 and not nav_off1:
@@ -1315,7 +1317,8 @@ class EDAutopilot:
             occ: bool = tar_off1['occ']
             behind = False
             result = {'roll': tar_off1['roll'], 'pit': tar_off1['pit'], 'yaw': tar_off1['yaw'],
-                      'tar_occ': occ, 'tar_behind': behind, 'used_nav': False, 'used_tar': True}
+                      'tar_occ': occ, 'tar_behind': behind, 'used_nav': False, 'used_tar': True,
+                      'boundary': False}
             return result
 
         elif tar_off1 and nav_off1:
@@ -1337,11 +1340,13 @@ class EDAutopilot:
                 occ: bool = tar_off1['occ']
                 behind = nav_off1['z'] < 0
                 result = {'roll': tar_off1['roll'], 'pit': tar_off1['pit'], 'yaw': tar_off1['yaw'],
-                          'tar_occ': occ, 'tar_behind': behind, 'used_nav': False, 'used_tar': True}
+                          'tar_occ': occ, 'tar_behind': behind, 'used_nav': False, 'used_tar': True,
+                          'boundary': nav_off1.get('boundary', False)}
                 return result
             else:
                 result = {'roll': nav_off1['roll'], 'pit': nav_off1['pit'], 'yaw': nav_off1['yaw'],
-                          'tar_occ': False, 'tar_behind': False, 'used_nav': True, 'used_tar': False}
+                          'tar_occ': False, 'tar_behind': False, 'used_nav': True, 'used_tar': False,
+                          'boundary': nav_off1.get('boundary', False)}
                 return result
 
         else:
@@ -1771,7 +1776,8 @@ class EDAutopilot:
             close = 30.0  # in degrees
 
             # Roll if the nav point is not directly behind us, or in front of us.
-            if ((((-180 + close) < off['yaw'] < (0 - close)) or
+            if (not off.get('boundary', False) and
+                    (((-180 + close) < off['yaw'] < (0 - close)) or
                  ((0 + close) < off['yaw'] < (180 - close))) and
                     (((-180 + close) < off['pit'] < (0 - close)) or
                      ((0 + close) < off['pit'] < (180 - close)))):
@@ -1783,7 +1789,7 @@ class EDAutopilot:
                     # Calc roll time based on nav point location
                     if off is None:
                         self.ap_ckb('log', 'Unable to detect compass.')
-                        continue
+                        break
                     if abs(off['roll']) > close and (180 - abs(off['roll']) > close):
                         # Clear the overlays before moving
                         if self.debug_overlay:
@@ -1805,7 +1811,7 @@ class EDAutopilot:
                 # Calc pitch time based on nav point location
                 if off is None:
                     self.ap_ckb('log', 'Unable to detect compass.')
-                    continue
+                    break
                 if abs(off['pit']) > close:
                     # Clear the overlays before moving
                     if self.debug_overlay:
@@ -1824,7 +1830,7 @@ class EDAutopilot:
                 # Calc yaw time based on nav point location
                 if off is None:
                     self.ap_ckb('log', 'Unable to detect compass.')
-                    continue
+                    break
                 if abs(off['yaw']) > close:
                     # Clear the overlays before moving
                     if self.debug_overlay:
@@ -2643,12 +2649,11 @@ class EDAutopilot:
 
         # Successful targeting of Station, lets go to it
         sleep(3)  # Wait for compass to stop flashing blue!
-        if self.have_destination(scr_reg):
-            self.ap_ckb('log', " - Station: " + station_name)
-            self.update_ap_status(f"SC to Station: {station_name}")
-            self.sc_assist(scr_reg)
-        else:
-            self.ap_ckb('log', f" - Could not target station: {station_name}")
+        self.ap_ckb('log', " - Station: " + station_name)
+        self.update_ap_status(f"SC to Station: {station_name}")
+        # SC 助手内部负责有限次恢复罗盘；避免外层预检查失败后直接放弃。
+        if not self.sc_assist(scr_reg):
+            self.ap_ckb('log', f" - Failed to maneuver to station: {station_name}")
             return False
 
         return True
@@ -2756,7 +2761,7 @@ class EDAutopilot:
             sleep(1)
             return FSDAssistReturn.Partial
 
-    def sc_assist(self, scr_reg, do_docking=True):
+    def sc_assist(self, scr_reg, do_docking=True) -> bool:
         """ Supercruise Assist loop to travel to target in system and perform autodock.
         """
         logger.debug("Entered sc_assist")
@@ -2766,10 +2771,19 @@ class EDAutopilot:
 
         align_failed = False
         # see if we have a compass up, if so then we have a target
-        if not self.have_destination(scr_reg):
-            self.ap_ckb('log', "Quiting SC Assist - Compass not found. Rotate ship and try again.")
+        destination_detected = False
+        for attempt in range(6):
+            if self.have_destination(scr_reg):
+                destination_detected = True
+                break
+            if attempt < 5:
+                self.ap_ckb('log', 'Compass not found; rotating to reacquire destination.')
+                self.ship_control.roll_clockwise_anticlockwise(90)
+                sleep(0.5)
+        if not destination_detected:
+            self.ap_ckb('log', "Quiting SC Assist - Compass not found after recovery attempts.")
             logger.debug("Quiting sc_assist - compass not found")
-            return
+            return False
         # else:
         #     # Quick calibrate the compass
         #     self.quick_calibrate_compass()
@@ -2876,6 +2890,7 @@ class EDAutopilot:
             self.ap_ckb('log', "Supercruise dropped, terminating SC Assist")
 
         self.ap_ckb('log+vce', "Supercruise Assist complete")
+        return not align_failed
 
     def robigo_assist(self):
         self.robigo.loop(self)

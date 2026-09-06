@@ -37,6 +37,7 @@ class CompassTargetOffset(TypedDict):
     tar_behind: bool
     used_nav: bool
     used_tar: bool
+    boundary: bool
 
 
 class ThrottleDemand(TypedDict):
