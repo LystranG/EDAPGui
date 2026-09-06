@@ -2579,6 +2579,13 @@ class EDAutopilot:
     def sc_engage(self, boost: bool) -> bool:
         """ Engages supercruise, then returns us to 50% speed, unless we are in SC already.
         """
+        # A previous destination drop can leave the disengage latch set while the
+        # waypoint flow proceeds to its next navigation leg. Reset only the latch
+        # and cancel in-flight OCR; keep an already-running monitor thread alive.
+        self._sc_disengage_active = False
+        self._sc_disengage_cancel_epoch += 1
+        self._clear_disengage_overlay()
+
         # Check if we are already in SC
         if self.status.get_flag(FlagsSupercruise):
             # Start SCO monitoring

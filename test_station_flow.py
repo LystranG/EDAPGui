@@ -74,9 +74,23 @@ def load_sc_target_align():
     return namespace['sc_target_align'], ScTargetAlignReturn
 
 
+def load_sc_engage():
+    tree = ast.parse((SOURCE / 'ED_AP.py').read_text(encoding='utf-8'))
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'EDAutopilot')
+    method = next(node for node in cls.body
+                  if isinstance(node, ast.FunctionDef) and node.name == 'sc_engage')
+    flags_supercruise = object()
+    namespace = {'FlagsSupercruise': flags_supercruise}
+    module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), method],
+                        type_ignores=[])
+    exec(compile(ast.fix_missing_locations(module), str(SOURCE / 'ED_AP.py'), 'exec'), namespace)
+    return namespace['sc_engage'], flags_supercruise
+
+
 SUPERCRUISE_TO_STATION = load_method()
 SC_ASSIST = load_sc_assist()
 SC_TARGET_ALIGN, SC_TARGET_ALIGN_RETURN = load_sc_target_align()
+SC_ENGAGE, FLAGS_SUPERCRUISE = load_sc_engage()
 
 
 class StationFlowTests(TestCase):
@@ -155,6 +169,25 @@ class StationFlowTests(TestCase):
         self.assertTrue(result)
         ap.dock.assert_called_once_with()
         ap.stop_sco_monitoring.assert_called_once_with(clear_disengage=False)
+
+    def test_new_supercruise_leg_clears_previous_disengage_latch(self):
+        status = SimpleNamespace(get_flag=Mock(return_value=True))
+        start_monitoring = Mock()
+        ap = SimpleNamespace(
+            status=status,
+            _sc_disengage_active=True,
+            _sc_disengage_cancel_epoch=0,
+            _clear_disengage_overlay=Mock(),
+            start_sco_monitoring=start_monitoring,
+        )
+
+        result = SC_ENGAGE(ap, False)
+
+        self.assertTrue(result)
+        self.assertFalse(ap._sc_disengage_active)
+        self.assertEqual(ap._sc_disengage_cancel_epoch, 1)
+        ap._clear_disengage_overlay.assert_called_once_with()
+        start_monitoring.assert_called_once_with()
 
     def test_sc_target_align_tolerates_transient_target_loss(self):
         offsets = iter((
