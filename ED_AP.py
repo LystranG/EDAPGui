@@ -1073,6 +1073,12 @@ class EDAutopilot:
         pit_pct = max(min(final_y_pct/lat_rad_at_lng, 1.0), -1.0)
         yaw_pct = max(min(final_x_pct/lng_rad_at_lat, 1.0), -1.0)
 
+        # 导航点贴在圆环边界时，圆环会污染形状和模型分类。此时前后方向
+        # 尚不确定，但转动方向仍由二维位置决定；将角度规范到 90 度附近，
+        # 让下一帧识别跨过边界，而不是使用模型给出的错误小角度。
+        boundary_uncertain = (nav_shape is None
+                              and math.hypot(final_x_pct, final_y_pct) >= 0.82)
+
         if final_z_pct > 0:
             final_pit_deg = (-1 * degrees(math.acos(pit_pct))) + 90  # Y in deg (-90.0 to 90.0, 0.0 in the center)
             final_yaw_deg = (-1 * degrees(math.acos(yaw_pct))) + 90  # X in deg (-90.0 to 90.0, 0.0 in the center)
@@ -1087,8 +1093,15 @@ class EDAutopilot:
             else:
                 final_yaw_deg = degrees(math.acos(yaw_pct)) - 270  # X in deg (-90.0 to 90.0, 0.0 in the center)
 
+        if boundary_uncertain:
+            if abs(final_pit_deg) > 3.0:
+                final_pit_deg = math.copysign(max(abs(final_pit_deg), 90.0), final_pit_deg)
+            if abs(final_yaw_deg) > 3.0:
+                final_yaw_deg = math.copysign(max(abs(final_yaw_deg), 90.0), final_yaw_deg)
+
         result = {'x': round(final_x_pct, 4), 'y': round(final_y_pct, 4), 'z': round(final_z_pct, 2),
                   'roll': round(final_roll_deg, 2), 'pit': round(final_pit_deg, 2), 'yaw': round(final_yaw_deg, 2)}
+        result['boundary'] = boundary_uncertain
 
         # Draw box around region
         if self.debug_overlay:

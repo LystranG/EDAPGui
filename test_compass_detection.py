@@ -96,6 +96,13 @@ class CompassDirectionTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['z'], -1)
 
+    def test_boundary_marker_uses_ninety_degree_probe(self):
+        result, _ = self.nav_offset(np.zeros((120, 120, 3), np.uint8),
+                                    [match('compass', .9, [15, 15, 105, 105]),
+                                     match('navpoint', .8, [15, 52, 31, 68])])
+        self.assertTrue(result['boundary'])
+        self.assertGreaterEqual(abs(result['yaw']), 90)
+
     def test_actual_screenshots_override_wrong_model_class(self):
         fixtures = [('front.png', False), ('behind.png', True), ('behind_small.png', True)]
         for filename, behind in fixtures:
