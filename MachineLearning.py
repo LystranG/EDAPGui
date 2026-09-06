@@ -51,7 +51,9 @@ class MachLearn:
         matches: list[MachLearnMatch] = []
         # Do prediction with ML
         if model is ModelType.Compass:
-            results = self.compass_ml_model.predict(image, verbose=False)  # Predict on an image
+            # 罗盘边缘的导航点会让本体置信度明显下降，保留低分结果交给
+            # get_nav_offset 的空间约束和模板兜底筛选。
+            results = self.compass_ml_model.predict(image, conf=0.05, verbose=False)
         elif model is model.Target:
             results = self.target_ml_model.predict(image, verbose=False)  # Predict on an image
 

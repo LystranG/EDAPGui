@@ -109,6 +109,42 @@ class CompassDirectionTests(unittest.TestCase):
                     self.assertIsNotNone(result)
                     self.assertEqual(result['z'], -1 if behind else 1, (filename, scale))
 
+    def test_boundary_marker_recovers_compass_when_model_misses_ring(self):
+        """导航点贴近圆环边界时，不能因罗盘本体低置信度而进入无条件 roll。"""
+        template = cv2.imread(str(SOURCE / 'templates' / 'compass.png'), cv2.IMREAD_GRAYSCALE)
+        h, w = template.shape[:2]
+        # 用模板构造最小边界场景：罗盘完整可匹配，导航点框贴在圆环上边缘。
+        image = cv2.cvtColor(template, cv2.COLOR_GRAY2BGR)
+        # 模型仍能给出低分导航点，但漏掉低分罗盘本体；生产代码应使用模板恢复罗盘框。
+        nav = match('navpoint', .115, [34, 0, 45, 10])
+        reg = SimpleNamespace(
+            capture_region_percent=lambda *_: cv2.cvtColor(image, cv2.COLOR_BGR2BGRA),
+            reg={'compass': {'rect': [0, 0, image.shape[1], image.shape[0]]}},
+            compass_match_thresh=.5, navpoint_match_thresh=.8,
+            templates=SimpleNamespace(template={'compass': {'image': template, 'width': w, 'height': h}}))
+        ap = SimpleNamespace(scr=None, mach_learn=SimpleNamespace(model_predict=lambda *_: [nav]),
+                             debug_images=False, debug_overlay=False, cv_view=False, overlay=Mock())
+        result = METHODS['get_nav_offset'](ap, reg)
+        self.assertIsNotNone(result)
+        self.assertLess(abs(result['roll']), 20)
+
+    def test_template_fallback_handles_empty_model_result(self):
+        """模型完全无结果时，模板识别罗盘后仍应能从图像定位导航点。"""
+        template = cv2.imread(str(SOURCE / 'templates' / 'compass.png'), cv2.IMREAD_GRAYSCALE)
+        h, w = template.shape[:2]
+        image = cv2.cvtColor(template, cv2.COLOR_GRAY2BGR)
+        cv2.circle(image, (w // 2, h // 2), max(5, min(w, h) // 12), (190, 210, 110), -1)
+        reg = SimpleNamespace(
+            capture_region_percent=lambda *_: cv2.cvtColor(image, cv2.COLOR_BGR2BGRA),
+            reg={'compass': {'rect': [0, 0, w, h]}},
+            compass_match_thresh=.5, navpoint_match_thresh=.8,
+            templates=SimpleNamespace(template={'compass': {'image': template, 'width': w, 'height': h}}))
+        ap = SimpleNamespace(scr=None, mach_learn=SimpleNamespace(model_predict=lambda *_: None),
+                             debug_images=False, debug_overlay=False, cv_view=False, overlay=Mock())
+        result = METHODS['get_nav_offset'](ap, reg)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['z'], 1)
+
     def test_behind_compass_takes_precedence_over_front_target(self):
         ap = SimpleNamespace(scrReg=None, ap_ckb=Mock(),
                              get_nav_offset=lambda _: dict(z=-1, roll=0, pit=160, yaw=179),

@@ -933,6 +933,7 @@ class EDAutopilot:
         b_max_val = 0.0
         b_compass_quad = Quad()
         # b_pt = [0.0, 0.0]
+        compass_source = 'model'
         full_compass_image2 = cv2.cvtColor(full_compass_image, cv2.COLOR_BGRA2BGR)
         ml_res = self.mach_learn.model_predict(ModelType.Compass, full_compass_image2, '')
         if ml_res and len(ml_res) > 0:
@@ -942,15 +943,41 @@ class EDAutopilot:
                     compass_quad = ml.bounding_quad
                     # pt = [compass_quad.left, compass_quad.top]
 
+        # 检测框过小通常是边界导航点被误识别为罗盘；这时使用模板恢复完整圆环。
+        compass_valid = (max_val > 0.0 and compass_quad.width >= 20 and compass_quad.height >= 20)
+        if not compass_valid:
+            templates = getattr(scr_reg, 'templates', None)
+            template_data = getattr(templates, 'template', {}).get('compass') if templates else None
+            compass_template = template_data.get('image') if template_data else None
+            if compass_template is not None:
+                compass_template = compass_template.squeeze()
+                if compass_template.ndim > 2:
+                    compass_template = cv2.cvtColor(compass_template, cv2.COLOR_BGR2GRAY)
+                gray_image = cv2.cvtColor(full_compass_image2, cv2.COLOR_BGR2GRAY)
+                template_height, template_width = compass_template.shape[:2]
+                if (template_height <= gray_image.shape[0]
+                        and template_width <= gray_image.shape[1]):
+                    template_match = cv2.matchTemplate(gray_image, compass_template,
+                                                       cv2.TM_CCOEFF_NORMED)
+                    _, template_score, _, template_loc = cv2.minMaxLoc(template_match)
+                    template_threshold = getattr(scr_reg, 'compass_match_thresh', 0.5)
+                    if template_score >= template_threshold:
+                        tx, ty = template_loc
+                        compass_quad = Quad.from_rect([tx, ty,
+                                                       tx + template_width, ty + template_height])
+                        max_val = template_score
+                        compass_source = 'template'
+                        compass_valid = True
+
         # Check compass
-        if max_val == 0.0 or compass_quad.width <= 0 or compass_quad.height <= 0:
+        if not compass_valid:
             # Log screenshot for diagnostics/training
             if self.debug_images:
                 f = get_timestamped_filename('[get_nav_offset] no_compass_match', '', 'png')
                 cv2.imwrite(f'{self.debug_image_folder}/{f}', full_compass_image2)
             return None
         # 仅使用当前罗盘内最高分的导航点，避免其他 HUD 元素或低分框覆盖结果。
-        for ml in ml_res:
+        for ml in ml_res or []:
             quad = ml.bounding_quad
             cx, cy = (quad.left + quad.right) / 2, (quad.top + quad.bottom) / 2
             dx = (cx - (compass_quad.left + compass_quad.right) / 2) / (compass_quad.width / 2)
@@ -1078,7 +1105,7 @@ class EDAutopilot:
 
             self.overlay.overlay_rect('compass', (compass_with_border.left, compass_with_border.top), (compass_with_border.right, compass_with_border.bottom), (0, 255, 0), 2)
             self.overlay.overlay_rect('nav', (nav_to_screen.left, nav_to_screen.top), (nav_to_screen.right, nav_to_screen.bottom), (0, 255, 0), 2)
-            self.overlay.overlay_floating_text('compass', f'Com: {max_val:5.2f} (model)', compass_with_border.left, compass_with_border.top - 85, (0, 255, 0))
+            self.overlay.overlay_floating_text('compass', f'Com: {max_val:5.2f} ({compass_source})', compass_with_border.left, compass_with_border.top - 85, (0, 255, 0))
             self.overlay.overlay_floating_text('nav', f'Nav: {n_max_val:5.2f} (model)', compass_with_border.left, compass_with_border.top - 65, (0, 255, 0))
             direction = 'behind' if final_z_pct < 0 else 'ahead'
             self.overlay.overlay_floating_text('nav_beh', f'NavB: {b_max_val:5.2f} | {direction} ({direction_source})', compass_with_border.left, compass_with_border.top - 45, (0, 255, 0))
@@ -1098,7 +1125,7 @@ class EDAutopilot:
 
             #   img = cv2.resize(dst_image, dim, interpolation =cv2.INTER_AREA)
             icompass_image_d = cv2.rectangle(icompass_image_d, (0, 0), (1000, 60), (0, 0, 0), -1)
-            cv2.putText(icompass_image_d, f'Compass: {max_val:5.4f} (model)', (1, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(icompass_image_d, f'Compass: {max_val:5.4f} ({compass_source})', (1, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.putText(icompass_image_d, f'Nav: {n_max_val:5.2f} NavB: {b_max_val:5.2f} ({direction_source})', (1, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
             # cv2.putText(icompass_image_d, f'Result: {result}', (1, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.putText(icompass_image_d, f'x: {final_x_pct:5.2f} y: {final_y_pct:5.2f} z: {final_z_pct:5.2f}', (1, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)

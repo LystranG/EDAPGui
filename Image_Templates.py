@@ -18,6 +18,7 @@ class Image_Templates:
     def __init__(self, scale_x, scale_y):
         self.template = {'elw': {'image': None, 'width': 1, 'height': 1},
                          'elw_sig': {'image': None, 'width': 1, 'height': 1},
+                         'compass': {'image': None, 'width': 1, 'height': 1},
                          'target': {'image': None, 'width': 1, 'height': 1},
                          'disengage': {'image': None, 'width': 1, 'height': 1},
                          'missions': {'image': None, 'width': 1, 'height': 1},
@@ -41,6 +42,7 @@ class Image_Templates:
         """ Load the full set of image templates. """
         self.template['elw'] = self.load_template("templates/elw-template.png", scale_x, scale_y)
         self.template['elw_sig'] = self.load_template("templates/elw-sig-template.png", scale_x, scale_y)
+        self.template['compass'] = self.load_template("templates/compass.png", scale_x, scale_y)
         self.template['target'] = self.load_template("templates/destination.png", scale_x, scale_y)
         self.template['disengage'] = self.load_template("templates/sc-disengage.png", scale_x, scale_y)
         self.template['missions'] = self.load_template("templates/completed-missions.png", scale_x, scale_y)
