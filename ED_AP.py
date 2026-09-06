@@ -14,6 +14,7 @@ from EDAPColonizeEditor import read_json_file, write_json_file
 from EDFSS import EDFSS
 from EDPlayerSettings import EDPlayerSettings
 from MachineLearning import MachLearn, ModelType
+from CompassDetection import detect_navpoint_shape
 from simple_localization import LocalizationManager
 
 from EDAP_EDMesg_Server import EDMesgServer
@@ -934,36 +935,47 @@ class EDAutopilot:
         ml_res = self.mach_learn.model_predict(ModelType.Compass, full_compass_image2, '')
         if ml_res and len(ml_res) > 0:
             for ml in ml_res:
-                if ml.class_name == 'compass':
+                if ml.class_name == 'compass' and ml.match_pct > max_val:
                     max_val = ml.match_pct
                     compass_quad = ml.bounding_quad
                     # pt = [compass_quad.left, compass_quad.top]
-                if ml.class_name == 'navpoint':
-                    n_max_val = ml.match_pct
-                    n_compass_quad = ml.bounding_quad
-                    # n_pt = [n_compass_quad.left, n_compass_quad.top]
-                if ml.class_name == 'navpoint-behind':
-                    b_max_val = ml.match_pct
-                    b_compass_quad = ml.bounding_quad
-                    # b_pt = [b_compass_quad.left, b_compass_quad.top]
 
         # Check compass
-        if max_val == 0.0:
+        if max_val == 0.0 or compass_quad.width <= 0 or compass_quad.height <= 0:
             # Log screenshot for diagnostics/training
             if self.debug_images:
                 f = get_timestamped_filename('[get_nav_offset] no_compass_match', '', 'png')
                 cv2.imwrite(f'{self.debug_image_folder}/{f}', full_compass_image2)
             return None
-        # Check navpoint
-        if n_max_val == 0.0 and b_max_val == 0.0:
+        # 仅使用当前罗盘内最高分的导航点，避免其他 HUD 元素或低分框覆盖结果。
+        for ml in ml_res:
+            quad = ml.bounding_quad
+            cx, cy = (quad.left + quad.right) / 2, (quad.top + quad.bottom) / 2
+            dx = (cx - (compass_quad.left + compass_quad.right) / 2) / (compass_quad.width / 2)
+            dy = (cy - (compass_quad.top + compass_quad.bottom) / 2) / (compass_quad.height / 2)
+            if not (dx * dx + dy * dy <= 1.15 ** 2
+                    and 0 < quad.width < compass_quad.width
+                    and 0 < quad.height < compass_quad.height):
+                continue
+            if ml.class_name == 'navpoint' and ml.match_pct > n_max_val:
+                n_max_val, n_compass_quad = ml.match_pct, quad
+            elif ml.class_name == 'navpoint-behind' and ml.match_pct > b_max_val:
+                b_max_val, b_compass_quad = ml.match_pct, quad
+
+        nav_shape = detect_navpoint_shape(full_compass_image2, compass_quad)
+        if nav_shape is None and n_max_val == 0.0 and b_max_val == 0.0:
             # Log screenshot for diagnostics/training
             if self.debug_images:
                 f = get_timestamped_filename('[get_nav_offset] no_navpoint_match', '', 'png')
                 cv2.imwrite(f'{self.debug_image_folder}/{f}', full_compass_image2)
             return None
 
-        # Check if the Nav Point is visible. If not, the Nav Point Behind may be visible
-        if n_max_val > b_max_val:
+        # 明确的空心/实心特征优先；不支持的配色或模糊图像保留模型判断。
+        direction_source = 'shape' if nav_shape is not None else 'model'
+        if nav_shape is not None:
+            final_z_pct = -1.0 if nav_shape.behind else 1.0
+            n_compass_quad = nav_shape.bounding_quad
+        elif n_max_val > b_max_val:
             final_z_pct = 1.0  # Ahead
             n_compass_quad = n_compass_quad
         else:
@@ -1064,9 +1076,10 @@ class EDAutopilot:
 
             self.overlay.overlay_rect('compass', (compass_with_border.left, compass_with_border.top), (compass_with_border.right, compass_with_border.bottom), (0, 255, 0), 2)
             self.overlay.overlay_rect('nav', (nav_to_screen.left, nav_to_screen.top), (nav_to_screen.right, nav_to_screen.bottom), (0, 255, 0), 2)
-            self.overlay.overlay_floating_text('compass', f'Com: {max_val:5.2f} > {scr_reg.compass_match_thresh}', compass_with_border.left, compass_with_border.top - 85, (0, 255, 0))
-            self.overlay.overlay_floating_text('nav', f'Nav: {n_max_val:5.2f} > {scr_reg.navpoint_match_thresh}', compass_with_border.left, compass_with_border.top - 65, (0, 255, 0))
-            self.overlay.overlay_floating_text('nav_beh', f'NavB: {b_max_val:5.2f}', compass_with_border.left, compass_with_border.top - 45, (0, 255, 0))
+            self.overlay.overlay_floating_text('compass', f'Com: {max_val:5.2f} (model)', compass_with_border.left, compass_with_border.top - 85, (0, 255, 0))
+            self.overlay.overlay_floating_text('nav', f'Nav: {n_max_val:5.2f} (model)', compass_with_border.left, compass_with_border.top - 65, (0, 255, 0))
+            direction = 'behind' if final_z_pct < 0 else 'ahead'
+            self.overlay.overlay_floating_text('nav_beh', f'NavB: {b_max_val:5.2f} | {direction} ({direction_source})', compass_with_border.left, compass_with_border.top - 45, (0, 255, 0))
             self.overlay.overlay_floating_text('compass_rpy', f'r: {round(final_roll_deg, 2)} p: {round(final_pit_deg, 2)} y: {round(final_yaw_deg, 2)}', compass_with_border.left, compass_with_border.bottom, (0, 255, 0))
             self.overlay.overlay_paint()
 
@@ -1083,8 +1096,8 @@ class EDAutopilot:
 
             #   img = cv2.resize(dst_image, dim, interpolation =cv2.INTER_AREA)
             icompass_image_d = cv2.rectangle(icompass_image_d, (0, 0), (1000, 60), (0, 0, 0), -1)
-            cv2.putText(icompass_image_d, f'Compass: {max_val:5.4f} > {scr_reg.compass_match_thresh:5.2f}', (1, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
-            cv2.putText(icompass_image_d, f'Nav Point: {n_max_val:5.4f} > {scr_reg.navpoint_match_thresh:5.2f}', (1, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(icompass_image_d, f'Compass: {max_val:5.4f} (model)', (1, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(icompass_image_d, f'Nav: {n_max_val:5.2f} NavB: {b_max_val:5.2f} ({direction_source})', (1, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
             # cv2.putText(icompass_image_d, f'Result: {result}', (1, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.putText(icompass_image_d, f'x: {final_x_pct:5.2f} y: {final_y_pct:5.2f} z: {final_z_pct:5.2f}', (1, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.putText(icompass_image_d, f'r: {final_roll_deg:5.2f}deg p: {final_pit_deg:5.2f}deg y: {final_yaw_deg:5.2f}deg', (1, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
@@ -1242,7 +1255,8 @@ class EDAutopilot:
         # Check Target and Compass
         nav_off1 = self.get_nav_offset(self.scrReg)
         tar_off1 = self.get_target_offset(self.scrReg)
-        if nav_off1 and not tar_off1:
+        # 后方导航点与前方目标框冲突时，不能使用目标框的小角度提前结束掉头。
+        if nav_off1 and (not tar_off1 or nav_off1['z'] < 0):
             # Compass detected and not target
             # Try to use the compass data if the target is not visible.
             # self.ap_ckb('log', 'Found Compass only for destination offset.')
