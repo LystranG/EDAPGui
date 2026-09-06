@@ -312,6 +312,8 @@ class EDAutopilot:
             "JumpTries": 3,  #
             "NavAlignTries": 3,  #
             "CompassReacquireTries": 12,  # retries after selecting an in-system destination
+            "TargetAlignLostRetries": 3,  # 目标/罗盘短暂丢失后的重试次数
+            "TargetAlignLostRetryDelay": 0.25,  # 目标识别重试间隔（秒）
             "RefuelThreshold": 65,  # if fuel level get below this level, it will attempt refuel
             "FuelThreasholdAbortAP": 10,  # level at which AP will terminate, because we are not scooping well
             "WaitForAutoDockTimer": 240,  # After docking granted, wait this amount of time for us to get docked with autodocking
@@ -415,6 +417,10 @@ class EDAutopilot:
                 cnf['WaypointFilepath'] = ""
             if 'CompassReacquireTries' not in cnf:
                 cnf['CompassReacquireTries'] = 12
+            if 'TargetAlignLostRetries' not in cnf:
+                cnf['TargetAlignLostRetries'] = 3
+            if 'TargetAlignLostRetryDelay' not in cnf:
+                cnf['TargetAlignLostRetryDelay'] = 0.25
             if 'DebugOCR' not in cnf:
                 cnf['DebugOCR'] = False
             if 'DebugImages' not in cnf:
@@ -1927,6 +1933,8 @@ class EDAutopilot:
         # Copy locally as we will change the values
         target_align_outer_lim = self.target_align_outer_lim
         target_align_inner_lim = self.target_align_inner_lim
+        target_loss_retries = max(1, int(getattr(self, 'config', {}).get('TargetAlignLostRetries', 3)))
+        target_loss_retry_delay = max(0.05, float(getattr(self, 'config', {}).get('TargetAlignLostRetryDelay', 0.25)))
 
         off = None
         tar_off1: CompassTargetOffset | None = None
@@ -2025,8 +2033,19 @@ class EDAutopilot:
                 # self.ship_control.yaw_right_left(y_deg)
                 self.ship_control.yaw_right_left(off['yaw'], auto_tune=self.auto_tune_rpy, cur_deg=off['yaw'])
 
-            # Check Target and Compass
+            # OCR/模板匹配可能短暂同时丢失两个标记，目标本身仍然有效时给予有限宽限期。
             tar_off2 = self.get_compass_target_offset()
+            if tar_off2 is None:
+                for retry in range(target_loss_retries):
+                    if self._sc_disengage_active:
+                        self.stop_sco_monitoring()
+                        return ScTargetAlignReturn.Disengage
+                    logger.debug(f"sc_target_align target loss retry {retry + 1}/{target_loss_retries}")
+                    sleep(target_loss_retry_delay)
+                    tar_off2 = self.get_compass_target_offset()
+                    if tar_off2 is not None:
+                        logger.debug("sc_target_align target recognition recovered")
+                        break
             if tar_off2:
                 off = tar_off2
                 logger.debug(f"sc_target_align after: pit:{off['pit']} yaw: {off['yaw']} ")
@@ -2071,8 +2090,8 @@ class EDAutopilot:
 
             # Check if target is outside the target region (behind us) and break loop
             if tar_off2 is None:
-                logger.debug("sc_target_align lost target")
-                self.ap_ckb('log', 'Target Align failed - lost target.')
+                logger.debug("sc_target_align lost target after grace retries")
+                self.ap_ckb('log', 'Target Align failed - lost target after recognition retries.')
                 return ScTargetAlignReturn.Lost
 
         # # We are aligned, so define the navigation correction as the current offset. This won't be 100% accurate, but
@@ -2841,9 +2860,18 @@ class EDAutopilot:
                 self.status.wait_for_flag2_off(Flags2GlideMode, 30)
                 break
             else:
-                # if we dropped from SC, then we rammed into planet
-                logger.debug("No longer in supercruise")
-                align_failed = True
+                # 正常到站时游戏先发出 SupercruiseExit（状态变为 in_space），
+                # 脱离提示 OCR 可能稍后才识别。目的地脱离事件可以确认这是正常到站，
+                # 应继续执行 docking；没有该事件才按异常掉出超巡处理。
+                ship_state = self.jn.ship_state()
+                destination_drop = ship_state.get('SupercruiseDestinationDrop_type')
+                if destination_drop:
+                    logger.debug(f"Supercruise exited at destination: {destination_drop}")
+                    self._sc_disengage_active = True
+                    self.stop_sco_monitoring(clear_disengage=False)
+                else:
+                    logger.debug("No longer in supercruise")
+                    align_failed = True
                 break
 
             # check if we are being interdicted

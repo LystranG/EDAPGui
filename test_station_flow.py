@@ -1,9 +1,11 @@
 """空间站 waypoint 流程的失败传播回归测试。"""
 
 import ast
+from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import Mock
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -30,16 +32,51 @@ def load_sc_assist():
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'EDAutopilot')
     method = next(node for node in cls.body
                   if isinstance(node, ast.FunctionDef) and node.name == 'sc_assist')
-    namespace = {'logger': SimpleNamespace(debug=lambda *_args, **_kwargs: None),
-                 'sleep': lambda *_args, **_kwargs: None}
+    class ScTargetAlignReturn(Enum):
+        Lost = 1
+        Found = 2
+        Disengage = 3
+
+    namespace = {
+        'logger': SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+        'sleep': lambda *_args, **_kwargs: None,
+        'ScTargetAlignReturn': ScTargetAlignReturn,
+        'FlagsSupercruise': object(),
+        'Flags2GlideMode': object(),
+        'FlagsDocked': object(),
+        'FlagsLanded': object(),
+    }
     module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), method],
                         type_ignores=[])
     exec(compile(ast.fix_missing_locations(module), str(SOURCE / 'ED_AP.py'), 'exec'), namespace)
     return namespace['sc_assist']
 
 
+def load_sc_target_align():
+    tree = ast.parse((SOURCE / 'ED_AP.py').read_text(encoding='utf-8'))
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'EDAutopilot')
+    method = next(node for node in cls.body
+                  if isinstance(node, ast.FunctionDef) and node.name == 'sc_target_align')
+
+    class ScTargetAlignReturn(Enum):
+        Lost = 1
+        Found = 2
+        Disengage = 3
+
+    namespace = {
+        'logger': SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+        'sleep': lambda *_args, **_kwargs: None,
+        'ScTargetAlignReturn': ScTargetAlignReturn,
+    }
+    module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), method],
+                        type_ignores=[])
+    exec(compile(ast.fix_missing_locations(module), str(SOURCE / 'ED_AP.py'), 'exec'), namespace)
+    return namespace['sc_target_align'], ScTargetAlignReturn
+
+
 SUPERCRUISE_TO_STATION = load_method()
 SC_ASSIST = load_sc_assist()
+SC_TARGET_ALIGN, SC_TARGET_ALIGN_RETURN = load_sc_target_align()
 
 
 class StationFlowTests(TestCase):
@@ -80,6 +117,93 @@ class StationFlowTests(TestCase):
             config={'CompassReacquireTries': 2},
         )
         self.assertFalse(SC_ASSIST(ap, None))
+
+    def test_sc_assist_docks_after_destination_drop_without_disengage_ocr(self):
+        ship = {
+            'status': 'in_space',
+            'SupercruiseDestinationDrop_type': 'TEST STATION',
+            'has_adv_dock_comp': True,
+            'has_std_dock_comp': False,
+        }
+        status = SimpleNamespace(
+            get_flag=lambda *_: False,
+            get_flag2=lambda *_: False,
+        )
+        ap = SimpleNamespace(
+            ship_control=SimpleNamespace(goto_cockpit_view=Mock()),
+            status=status,
+            jn=SimpleNamespace(ship_state=lambda: ship),
+            config={'CompassReacquireTries': 2},
+            have_destination=Mock(return_value=True),
+            sc_engage=Mock(),
+            set_throttle_50=Mock(),
+            set_throttle_100=Mock(),
+            set_throttle_0=Mock(),
+            compass_align=Mock(),
+            sc_target_align=Mock(return_value=SC_TARGET_ALIGN_RETURN.Found),
+            interdiction_check=Mock(return_value=False),
+            dock=Mock(),
+            ap_ckb=Mock(),
+            vce=SimpleNamespace(say=Mock()),
+            _sc_disengage_active=False,
+            stop_sco_monitoring=Mock(),
+            update_ap_status=Mock(),
+        )
+
+        result = SC_ASSIST(ap, None)
+
+        self.assertTrue(result)
+        ap.dock.assert_called_once_with()
+        ap.stop_sco_monitoring.assert_called_once_with(clear_disengage=False)
+
+    def test_sc_target_align_tolerates_transient_target_loss(self):
+        offsets = iter((
+            {'pit': 3.0, 'yaw': 0.0, 'tar_behind': False, 'tar_occ': False, 'used_nav': False},
+            None,
+            None,
+            {'pit': 0.25, 'yaw': 0.0, 'tar_behind': False, 'tar_occ': False, 'used_nav': False},
+        ))
+        ship_control = SimpleNamespace(pitch_up_down=Mock(), yaw_right_left=Mock())
+        ap = SimpleNamespace(
+            target_align_outer_lim=1.0,
+            target_align_inner_lim=0.5,
+            auto_tune_rpy=False,
+            debug_overlay=False,
+            _sc_disengage_active=False,
+            ship_control=ship_control,
+            get_compass_target_offset=lambda: next(offsets),
+            ap_ckb=Mock(),
+        )
+
+        result = SC_TARGET_ALIGN(ap, None)
+
+        self.assertEqual(result, SC_TARGET_ALIGN_RETURN.Found)
+        ship_control.pitch_up_down.assert_called_once()
+
+    def test_sc_target_align_still_fails_after_grace_retries(self):
+        offsets = iter((
+            {'pit': 3.0, 'yaw': 0.0, 'tar_behind': False, 'tar_occ': False, 'used_nav': False},
+            None,
+            None,
+            None,
+            None,
+        ))
+        ap = SimpleNamespace(
+            target_align_outer_lim=1.0,
+            target_align_inner_lim=0.5,
+            auto_tune_rpy=False,
+            debug_overlay=False,
+            _sc_disengage_active=False,
+            config={'TargetAlignLostRetries': 3, 'TargetAlignLostRetryDelay': 0.05},
+            ship_control=SimpleNamespace(pitch_up_down=Mock(), yaw_right_left=Mock()),
+            get_compass_target_offset=lambda: next(offsets),
+            ap_ckb=Mock(),
+        )
+
+        result = SC_TARGET_ALIGN(ap, None)
+
+        self.assertEqual(result, SC_TARGET_ALIGN_RETURN.Lost)
+        ap.ap_ckb.assert_called_once_with('log', 'Target Align failed - lost target after recognition retries.')
 
 
 if __name__ == '__main__':
