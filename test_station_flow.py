@@ -52,6 +52,7 @@ class StationFlowTests(TestCase):
             sc_engage=lambda *_: None,
             have_destination=lambda *_: True,
             ap_ckb=lambda *_: None,
+            config={'CompassReacquireTries': 2},
             sc_assist=lambda *_: assist_result,
         )
         return ap
@@ -76,6 +77,7 @@ class StationFlowTests(TestCase):
                                          roll_clockwise_anticlockwise=lambda *_: None),
             have_destination=lambda *_: False,
             ap_ckb=lambda *_: None,
+            config={'CompassReacquireTries': 2},
         )
         self.assertFalse(SC_ASSIST(ap, None))
 

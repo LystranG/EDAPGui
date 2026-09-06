@@ -311,6 +311,7 @@ class EDAutopilot:
             "DSSButton": "Primary",  # if anything other than "Primary", it will use the Secondary Fire button for DSS
             "JumpTries": 3,  #
             "NavAlignTries": 3,  #
+            "CompassReacquireTries": 12,  # retries after selecting an in-system destination
             "RefuelThreshold": 65,  # if fuel level get below this level, it will attempt refuel
             "FuelThreasholdAbortAP": 10,  # level at which AP will terminate, because we are not scooping well
             "WaitForAutoDockTimer": 240,  # After docking granted, wait this amount of time for us to get docked with autodocking
@@ -412,6 +413,8 @@ class EDAutopilot:
                 cnf['HotkeysEnable'] = False
             if 'WaypointFilepath' not in cnf:
                 cnf['WaypointFilepath'] = ""
+            if 'CompassReacquireTries' not in cnf:
+                cnf['CompassReacquireTries'] = 12
             if 'DebugOCR' not in cnf:
                 cnf['DebugOCR'] = False
             if 'DebugImages' not in cnf:
@@ -2772,16 +2775,17 @@ class EDAutopilot:
         align_failed = False
         # see if we have a compass up, if so then we have a target
         destination_detected = False
-        for attempt in range(6):
+        reacquire_tries = max(1, int(self.config.get('CompassReacquireTries', 12)))
+        for attempt in range(reacquire_tries):
             if self.have_destination(scr_reg):
                 destination_detected = True
                 break
-            if attempt < 5:
+            if attempt < reacquire_tries - 1:
                 self.ap_ckb('log', 'Compass not found; rotating to reacquire destination.')
                 self.ship_control.roll_clockwise_anticlockwise(90)
                 sleep(0.5)
         if not destination_detected:
-            self.ap_ckb('log', "Quiting SC Assist - Compass not found after recovery attempts.")
+            self.ap_ckb('log', f"Quiting SC Assist - Compass not found after {reacquire_tries} recovery attempts.")
             logger.debug("Quiting sc_assist - compass not found")
             return False
         # else:
