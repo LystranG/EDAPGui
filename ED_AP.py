@@ -15,6 +15,7 @@ from EDFSS import EDFSS
 from EDPlayerSettings import EDPlayerSettings
 from MachineLearning import MachLearn, ModelType
 from CompassDetection import detect_navpoint_shape
+from DisengageDetection import can_trigger_disengage, evaluate_disengage_text
 from simple_localization import LocalizationManager
 
 from EDAP_EDMesg_Server import EDMesgServer
@@ -113,6 +114,7 @@ class EDAutopilot:
         self._fss_screen = None
         self._mach_learn = None
         self._sc_disengage_active = False  # Is SC Disengage active
+        self._sc_disengage_cancel_epoch = 0  # 取消进行中的 OCR，防止停止后后台线程发键
         self.ship_tst_roll_enabled = False
         self.ship_tst_pitch_enabled = False
         self.ship_tst_yaw_enabled = False
@@ -1373,10 +1375,36 @@ class EDAutopilot:
         else:
             return False
 
+    def _clear_disengage_overlay(self):
+        """清除脱离检测的矩形和文字，避免门控变化后显示上一帧状态。"""
+        if self.overlay is None:
+            return
+        self.overlay.overlay_remove_rect('sc_disengage_active')
+        self.overlay.overlay_remove_floating_text('sc_disengage_active')
+        self.overlay.overlay_paint()
+
+    def _show_disengage_overlay(self, scr_reg, message):
+        """显示当前脱离检测状态；关闭 Overlay 时主动清理旧内容。"""
+        if not self.debug_overlay:
+            self._clear_disengage_overlay()
+            return
+        abs_rect = scr_reg.reg['disengage']['rect']
+        self.overlay.overlay_rect1('sc_disengage_active', abs_rect, (0, 255, 0), 2)
+        self.overlay.overlay_floating_text('sc_disengage_active', message,
+                                            abs_rect[0], abs_rect[1] - 25, (0, 255, 0))
+        self.overlay.overlay_paint()
+
     def sc_disengage_ocr(self, scr_reg) -> bool:
-        """ look for the "SUPERCRUISE OVERCHARGE ACTIVE" text using OCR, if in this region then return true. """
-        # Do we have cockpit view? If not, return
-        if self.status.get_gui_focus() != GuiFocusNoFocus:
+        """检测脱离提示，必要时发送脱离按键并返回是否触发。"""
+        scan_epoch = self._sc_disengage_cancel_epoch
+        gui_focus = self.status.get_gui_focus()
+        sco_active = bool(getattr(self, 'sc_sco_is_active', False))
+
+        # Overlay 不应残留上一帧的 OCR 结果；即使门控阻止 OCR，也显示实际原因。
+        if not can_trigger_disengage(gui_focus, sco_active, GuiFocusNoFocus):
+            reason = 'focus' if gui_focus != GuiFocusNoFocus else 'sco'
+            self._show_disengage_overlay(scr_reg,
+                                         f'Diseng: gui={gui_focus} sco={int(sco_active)} WAIT ({reason})')
             return False
 
         image = self.scr.get_screen_region(scr_reg.reg['disengage']['rect'])
@@ -1391,24 +1419,44 @@ class EDAutopilot:
             start_time = time.time()
 
         # OCR the selected item
-        sim_match = 0.35  # Similarity match 0.0 - 1.0 for 0% - 100%)
+        sim_match = 0.35  # 相似度回退阈值
         sim = 0.0
         ocr_textlist = self.ocr.image_simple_ocr(image, 'disengage')
         if ocr_textlist is not None:
             sim = self.ocr.string_similarity(self.locale["PRESS_TO_DISENGAGE_MSG"], str(ocr_textlist))
-            logger.info(f"Disengage similarity with {str(ocr_textlist)} is {sim}")
+        decision = evaluate_disengage_text(ocr_textlist, sim, sim_match,
+                                           self.locale["PRESS_TO_DISENGAGE_MSG"])
 
-        if sim > sim_match:
+        # OCR 可能耗时数百毫秒，发送按键前必须重新读取状态，避免期间打开菜单或启用 SCO。
+        latest_gui_focus = self.status.get_gui_focus()
+        latest_sco_active = sco_active
+        get_flag2 = getattr(self.status, 'get_flag2', None)
+        if callable(get_flag2):
+            try:
+                latest_sco_active = bool(get_flag2(Flags2FsdScoActive))
+            except Exception:
+                latest_sco_active = bool(getattr(self, 'sc_sco_is_active', False))
+        self.sc_sco_is_active = latest_sco_active
+        allowed = (can_trigger_disengage(latest_gui_focus, latest_sco_active, GuiFocusNoFocus)
+                   and scan_epoch == self._sc_disengage_cancel_epoch)
+        should_trigger = allowed and decision.trigger
+        logger.info(f"Disengage OCR {str(ocr_textlist)} -> {decision.status_text} "
+                    f"gui={latest_gui_focus} sco={int(latest_sco_active)} allowed={int(allowed)}")
+
+        if should_trigger:
             self.ap_ckb('log+vce', 'Disengage Supercruise')
             self.keys.send('HyperSuperCombination')
 
         # Draw box around region
         if self.debug_overlay:
+            action = 'SEND J' if should_trigger else 'WAIT'
+            gate_reason = decision.reason if allowed else 'gate'
             elapsed_time = time.time() - start_time
-            abs_rect = scr_reg.reg['disengage']['rect']
-            self.overlay.overlay_rect1('sc_disengage_active', abs_rect, (0, 255, 0), 2)
-            self.overlay.overlay_floating_text('sc_disengage_active', f'Diseng: {str(ocr_textlist)} ({round(elapsed_time, 4)} Secs)', abs_rect[0], abs_rect[1] - 25, (0, 255, 0))
-            self.overlay.overlay_paint()
+            self._show_disengage_overlay(
+                scr_reg,
+                f'Diseng: {str(ocr_textlist)} sim={sim:.3f}/{sim_match:.2f} '
+                f'{gate_reason} gui={latest_gui_focus} sco={int(latest_sco_active)} {action} '
+                f'({round(elapsed_time, 4)} Secs)')
 
         if self.cv_view:
             image = cv2.rectangle(image, (0, 0), (1000, 30), (0, 0, 0), -1)
@@ -1418,10 +1466,7 @@ class EDAutopilot:
             cv2.moveWindow('disengage2', self.cv_view_x - 460, self.cv_view_y + 650)
             cv2.waitKey(30)
 
-        if sim > sim_match:
-            return True
-
-        return False
+        return should_trigger
 
     def start_sco_monitoring(self):
         """ Start Supercruise Overcharge Monitoring. This starts a parallel thread used to detect SCO
@@ -1435,6 +1480,8 @@ class EDAutopilot:
     def stop_sco_monitoring(self):
         """ Stop Supercruise Overcharge Monitoring. """
         self._sc_sco_active_loop_enable = False
+        self._sc_disengage_cancel_epoch += 1
+        self._clear_disengage_overlay()
 
     def _sc_sco_active_loop(self):
         """ A loop to determine is Supercruise Overcharge is active.
@@ -1460,6 +1507,7 @@ class EDAutopilot:
 
             # Protection if SCO is active
             if self.sc_sco_is_active:
+                self._clear_disengage_overlay()
                 if self.status.get_flag(FlagsOverHeating):
                     logger.info("SCO Aborting, overheating")
                     self.ap_ckb('log+vce', "SCO Aborting, overheating")
@@ -1492,6 +1540,7 @@ class EDAutopilot:
 
         # Reset disengage latch, in case it was latched.
         self._sc_disengage_active = False
+        self._clear_disengage_overlay()
 
     def undock(self):
         """ Performs menu action to undock from Station """
